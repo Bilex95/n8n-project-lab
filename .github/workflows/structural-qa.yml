@@ -40,6 +40,66 @@ jobs:
           done
           exit $status
 
+      - name: Check for duplicate node IDs and names
+        run: |
+          set -e
+          status=0
+          for f in $(find projects -type f -name "*.json"); do
+            dup_ids=$(jq -r '.nodes[].id' "$f" | sort | uniq -d)
+            dup_names=$(jq -r '.nodes[].name' "$f" | sort | uniq -d)
+            if [ -n "$dup_ids" ]; then
+              echo "::error file=$f::Duplicate node IDs found: $(echo "$dup_ids" | tr '\n' ' ')"
+              status=1
+            fi
+            if [ -n "$dup_names" ]; then
+              echo "::error file=$f::Duplicate node names found: $(echo "$dup_names" | tr '\n' ' ')"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Check connections reference existing nodes
+        run: |
+          set -e
+          status=0
+          for f in $(find projects -type f -name "*.json"); do
+            names=$(jq -r '.nodes[].name' "$f" | sort -u)
+            sources=$(jq -r '.connections | keys[]?' "$f" | sort -u)
+            targets=$(jq -r '[.connections | .. | objects | select(has("node")) | .node] | unique[]?' "$f" 2>/dev/null | sort -u)
+            for s in $sources; do
+              if ! grep -qxF "$s" <<< "$names"; then
+                echo "::error file=$f::Connection source node '$s' does not match any node name — broken connection"
+                status=1
+              fi
+            done
+            for t in $targets; do
+              if ! grep -qxF "$t" <<< "$names"; then
+                echo "::error file=$f::Connection target node '$t' does not match any node name — broken connection"
+                status=1
+              fi
+            done
+          done
+          exit $status
+
+      - name: Check for unbalanced expression braces
+        run: |
+          set -e
+          status=0
+          for f in $(find projects -type f -name "*.json"); do
+            # Scan only actual string VALUES (jq '.. | strings'), not the raw JSON
+            # text — adjacent structural braces (e.g. "parameters": {}}) would
+            # otherwise produce false-positive '}}' matches unrelated to n8n
+            # expression syntax.
+            strings_only=$(jq -r '[.. | strings] | join("\n")' "$f")
+            open=$(echo "$strings_only" | grep -o '{{' | wc -l)
+            close=$(echo "$strings_only" | grep -o '}}' | wc -l)
+            if [ "$open" != "$close" ]; then
+              echo "::error file=$f::Unbalanced n8n expression braces in string values — $open '{{' vs $close '}}'"
+              status=1
+            fi
+          done
+          exit $status
+
       - name: Scan for hardcoded secrets in workflow JSON
         run: |
           set -e
@@ -54,6 +114,25 @@ jobs:
             fi
           done
           exit $status
+
+      - name: Advisory — risky nodes without explicit error handling
+        run: |
+          risky='n8n-nodes-base\.(httpRequest|code|executeCommand|postgres|mySql|mongoDb|ssh)$'
+          for f in $(find projects -type f -name "*.json"); do
+            hits=$(jq -r --arg pat "$risky" '.nodes[] | select(.type | test($pat)) | select(.onError == null) | .name' "$f")
+            if [ -n "$hits" ]; then
+              echo "::warning file=$f::Risky node(s) with no explicit onError handling (review whether this is intentional): $(echo "$hits" | tr '\n' ', ')"
+            fi
+          done
+
+      - name: Advisory — webhook nodes without authentication
+        run: |
+          for f in $(find projects -type f -name "*.json"); do
+            hits=$(jq -r '.nodes[] | select(.type == "n8n-nodes-base.webhook") | select((.parameters.authentication // "none") == "none") | .name' "$f")
+            if [ -n "$hits" ]; then
+              echo "::warning file=$f::Webhook node(s) with no authentication configured: $(echo "$hits" | tr '\n' ', ')"
+            fi
+          done
 
   secret-scan-repo:
     runs-on: ubuntu-latest
