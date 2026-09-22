@@ -1,0 +1,24 @@
+# --- Secrets & credentials ---
+.env
+.env.*
+!.env.example
+*credentials*.json
+!**/credentials.example.json
+*.pem
+*.key
+*secret*
+*token*
+!.github/workflows/*.yml
+
+# --- n8n local runtime artifacts ---
+.n8n/
+n8n-data/
+*.sqlite
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+*.log
+node_modules/
+.vscode/
+.idea/

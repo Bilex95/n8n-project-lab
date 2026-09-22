@@ -1,0 +1,67 @@
+name: Structural QA
+
+on:
+  push:
+    paths:
+      - "projects/**/*.json"
+  pull_request:
+    paths:
+      - "projects/**/*.json"
+
+jobs:
+  validate-workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate workflow JSON is well-formed
+        run: |
+          set -e
+          status=0
+          for f in $(find projects -type f -name "*.json"); do
+            if ! jq empty "$f" 2>/dev/null; then
+              echo "::error file=$f::Invalid JSON"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Check workflow files have nodes and connections
+        run: |
+          set -e
+          status=0
+          for f in $(find projects -type f -name "*.json"); do
+            has_nodes=$(jq 'has("nodes")' "$f")
+            has_connections=$(jq 'has("connections")' "$f")
+            if [ "$has_nodes" != "true" ] || [ "$has_connections" != "true" ]; then
+              echo "::error file=$f::Missing top-level 'nodes' or 'connections' key — not a valid n8n export"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Scan for hardcoded secrets in workflow JSON
+        run: |
+          set -e
+          status=0
+          pattern='(api[_-]?key|apikey|secret|password|token|bearer|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+          for f in $(find projects -type f -name "*.json"); do
+            matches=$(grep -inE "$pattern" "$f" || true)
+            if [ -n "$matches" ]; then
+              echo "::warning file=$f::Possible hardcoded secret pattern found — review before merging:"
+              echo "$matches"
+              status=1
+            fi
+          done
+          exit $status
+
+  secret-scan-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
